@@ -28,12 +28,21 @@ PORT = int(os.environ.get("PORT", "8765"))
 
 
 def build_app() -> None:
-    if shutil.which("pnpm"):
+    # Windows exposes npm and pnpm as .cmd files. Invoke them through cmd.exe
+    # rather than asking CreateProcess to launch a shell script directly.
+    if os.name == "nt":
+        if shutil.which("pnpm.cmd"):
+            command = ["cmd.exe", "/d", "/s", "/c", "pnpm.cmd build"]
+        elif shutil.which("npm.cmd"):
+            command = ["cmd.exe", "/d", "/s", "/c", "npm.cmd run build"]
+        else:
+            raise RuntimeError("Node.js with npm (or pnpm) is required. Install Node.js, then reopen PowerShell.")
+    elif shutil.which("pnpm"):
         command = ["pnpm", "build"]
     elif shutil.which("npm"):
         command = ["npm", "run", "build"]
     else:
-        raise RuntimeError("Node.js and pnpm (or npm) are required to build the app.")
+        raise RuntimeError("Node.js with npm (or pnpm) is required to build the app.")
 
     env = os.environ.copy()
     env["VITE_BASE_PATH"] = "/"
