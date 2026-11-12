@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Build and serve the Vite app on localhost, then open it in a browser.
+"""Build/serve the Vite app locally, or package it as a Windows EXE.
 
-Usage from the repository root:
-    py run_local.py
+Run from the repository root:
+    py run_local.py             # build and open the app in your browser
+    py run_local.py --package   # build a portable launcher EXE in dist-exe/
 
-Optional: set PORT=8765 before running. Requires Python 3 and pnpm (or npm).
+The EXE bundles this web app, not the copyrighted game data archive. Import
+ your own game.tar.gz after the app opens. Packaging requires Node.js/npm and
+ PyInstaller (install with: py -m pip install pyinstaller).
 """
 
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -27,9 +32,15 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8765"))
 
 
+def bundled_dist() -> Path:
+    """Return the web build location in source and PyInstaller one-file modes."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS")) / "dist"
+    return DIST
+
+
 def build_app() -> None:
-    # Windows exposes npm and pnpm as .cmd files. Invoke them through cmd.exe
-    # rather than asking CreateProcess to launch a shell script directly.
+    # Windows exposes npm and pnpm as .cmd files. Invoke them through cmd.exe.
     if os.name == "nt":
         if shutil.which("pnpm.cmd"):
             command = ["cmd.exe", "/d", "/s", "/c", "pnpm.cmd build"]
@@ -52,9 +63,46 @@ def build_app() -> None:
         raise RuntimeError("Vite build completed but dist/index.html was not found.")
 
 
+def package_exe() -> None:
+    if os.name != "nt":
+        raise RuntimeError("Build the Windows EXE on Windows. Run this command in Windows PowerShell.")
+    if importlib.util.find_spec("PyInstaller") is None:
+        raise RuntimeError("PyInstaller is missing. Install it first with: py -m pip install pyinstaller")
+
+    build_app()
+    output_dir = ROOT / "dist-exe"
+    work_dir = ROOT / "build" / "pyinstaller"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    data_arg = f"{DIST};dist"
+
+    command = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--onefile",
+        "--name",
+        "ViceCityLocal",
+        "--distpath",
+        str(output_dir),
+        "--workpath",
+        str(work_dir),
+        "--specpath",
+        str(work_dir),
+        "--add-data",
+        data_arg,
+        str(Path(__file__).resolve()),
+    ]
+    subprocess.run(command, cwd=ROOT, check=True)
+    print(f"\nEXE created: {output_dir / 'ViceCityLocal.exe'}")
+    print("This packages the local web app launcher, not game.tar.gz.")
+
+
 class LocalAppHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(DIST), **kwargs)
+        super().__init__(*args, directory=str(bundled_dist()), **kwargs)
 
     def end_headers(self) -> None:
         # Required by SharedArrayBuffer/WebAssembly threads used by the app.
@@ -66,9 +114,10 @@ class LocalAppHandler(SimpleHTTPRequestHandler):
         print("[localhost] " + (fmt % args))
 
 
-def main() -> int:
+def run_server() -> int:
     try:
-        build_app()
+        if not (bundled_dist() / "index.html").is_file():
+            build_app()
         server = ThreadingHTTPServer((HOST, PORT), LocalAppHandler)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"Could not start the local app: {exc}", file=sys.stderr)
@@ -78,7 +127,6 @@ def main() -> int:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    # Wait until the local server responds before opening the browser.
     for _ in range(50):
         try:
             with urllib.request.urlopen(url, timeout=1):
@@ -90,7 +138,7 @@ def main() -> int:
         print("The local server did not become ready.", file=sys.stderr)
         return 1
 
-    print(f"Game is running at {url}. Press Ctrl+C to stop.")
+    print(f"Game is running at {url}. Close this window to stop the server.")
     webbrowser.open(url)
     try:
         server.serve_forever()
@@ -100,6 +148,21 @@ def main() -> int:
         server.shutdown()
         server.server_close()
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--package", action="store_true", help="build a one-file Windows EXE")
+    args = parser.parse_args()
+
+    try:
+        if args.package:
+            package_exe()
+            return 0
+        return run_server()
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"Could not complete the request: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
